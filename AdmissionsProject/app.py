@@ -56,7 +56,7 @@ if w_gpa + w_sat == 0:
 st.sidebar.markdown("---")
 st.sidebar.header("Noise Level (σ)")
 sigma_noise = st.sidebar.slider(
-    "Essay / holistic noise σ", 0.0, 10.0, 1.0, 0.1,
+    "Essay / holistic noise σ", 0.0, 5.0, 1.0, 0.1,
     help="Represents unobserved factors like essays and extracurriculars. "
          "Higher σ = more uncertainty in the posterior for γ."
 )
@@ -236,7 +236,7 @@ with tab_ear:
     st.markdown(
         "Input applicant pool parameters. The model shows expected admission "
         "outcomes under three worlds: **no bias** (γ = 0), **moderate bias** "
-        "(γ = −0.5), and **strong bias** (γ = −0.8) against Asian American applicants."
+        "(γ = −0.5), and **strong bias** (γ = −1) against Asian American applicants."
     )
 
     e1, e2, e3 = st.columns(3)
@@ -267,8 +267,8 @@ with tab_ear:
         st.markdown("---")
         col0, col1, col2 = st.columns(3)
 
-        gammas      = [0.0, -0.5, -0.8]
-        labels      = ["γ = 0", "γ = −0.5", "γ = −0.8"]
+        gammas      = [0.0, -0.5, -1]
+        labels      = ["γ = 0", "γ = −0.5", "γ = −1"]
         white_rates = []
         asian_rates = []
         white_shares = []
