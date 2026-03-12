@@ -5,6 +5,7 @@ import pandas as pd
 def generate_applicant_dataset(
     total_applicants: int,
     white_proportion: float,
+    asian_proportion: float,
     means: dict,    # {"white": {"gpa": , "sat": }, "asian": {...}}
     stds:  dict,    # same structure
     gpa_weight: float,
@@ -12,15 +13,22 @@ def generate_applicant_dataset(
     seed: int = 42,
 ) -> pd.DataFrame:
     """
-    Generate applicant dataset for White and Asian American applicants.
+    Generate applicant dataset for White and Asian American applicants only.
 
-    Q is computed from GPA and SAT only (normalized to [0,100]).
-    Essays are excluded from Q — they enter the model as noise instead.
+    white_proportion and asian_proportion are independent — they do not
+    need to sum to 1. Other racial groups (Black, Hispanic, etc.) exist
+    in the real pool but are not modeled; only White and Asian American
+    applicants are included here since they are the focus of inference.
+
+    Q is computed from GPA and SAT only. Essays enter the model as noise.
     """
+    if white_proportion + asian_proportion > 1.0:
+        raise ValueError("white_proportion + asian_proportion cannot exceed 1.0")
+
     rng = np.random.default_rng(seed)
 
     n_white = round(total_applicants * white_proportion)
-    n_asian = total_applicants - n_white
+    n_asian = round(total_applicants * asian_proportion)
 
     def sample(mean, std, size, lo, hi):
         return np.clip(rng.normal(mean, std, size), lo, hi)

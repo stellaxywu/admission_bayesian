@@ -2,31 +2,33 @@ import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 
-from D_gen   import generate_applicant_dataset
+from D_gen  import generate_applicant_dataset
 from admissions_func import simulate_admissions
 from bayesian   import compute_posterior
-from dataset   import DATASETS
+from dataset  import DATASETS
 
 # ---------------------------------------------------------------
 # HARDCODED INTERNALS
 # ---------------------------------------------------------------
-BETA1      = 0.03
+BETA1      = 0.5   # log-odds per 1 SD of Q (Q is standardized)
 STDS       = {
-    "white": {"gpa": 0.20, "sat": 120},
-    "asian": {"gpa": 0.20, "sat": 120},
+    "white": {"gpa": 0.22, "sat": 120},
+    "asian": {"gpa": 0.15, "sat": 120},
 }
-GAMMA_GRID = np.linspace(-3, 3, 200)   # coarser grid — MC likelihood is slower
+GAMMA_GRID = np.linspace(-3, 3, 200)
 
 # ---------------------------------------------------------------
 # SESSION STATE DEFAULTS
 # ---------------------------------------------------------------
 _DEFAULTS = {
-    "eg_total": 25000,  "eg_wprop": 0.5,
-    "eg_wgpa": 3.80,    "eg_agpa": 3.80,
-    "eg_wsat": 1350,    "eg_asat": 1350,
-    "eg_wadmit": 50.0,  "eg_aadmit": 50.0,
-    "eg_w_gpa_std": 0.20, "eg_a_gpa_std": 0.20,
-    "eg_w_sat_std": 120,  "eg_a_sat_std": 120,
+    "eg_total":      25000,
+    "eg_wprop":      0.77,
+    "eg_aprop":      0.06,
+    "eg_wgpa":       3.90,  "eg_agpa":  3.80,
+    "eg_wsat":       1350,  "eg_asat":  1400,
+    "eg_wadmit":     62.0,  "eg_aadmit": 54.0,
+    "eg_w_gpa_std":  0.22,  "eg_a_gpa_std": 0.15,
+    "eg_w_sat_std":  120,   "eg_a_sat_std": 120,
 }
 for _k, _v in _DEFAULTS.items():
     st.session_state.setdefault(_k, _v)
@@ -44,7 +46,7 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------
-# SIDEBAR — shared controls
+# SIDEBAR
 # ---------------------------------------------------------------
 st.sidebar.header("Score Weights")
 w_gpa = st.sidebar.slider("GPA weight", 0.0, 1.0, 0.5, 0.05)
@@ -54,27 +56,51 @@ if w_gpa + w_sat == 0:
     st.stop()
 
 st.sidebar.markdown("---")
-st.sidebar.header("Noise Level (σ)")
+st.sidebar.header("Unobserved Confounders")
+st.sidebar.markdown(
+    "Unobserved factors (legacy status, athletic recruitment, geography) "
+    "may correlate with race **and** affect admission, partially explaining "
+    "the admit rate gap without implying direct discrimination."
+)
+delta = st.sidebar.slider(
+    "Confounder advantage δ (white vs Asian)",
+    0.0, 2.0, 0.0, 0.05,
+    help="Mean log-odds advantage for white applicants from unobserved factors. "
+         "δ=0: unobserved factors are race-neutral. "
+         "δ=0.5: white applicants gain ~0.5 log-odds on average from legacy/athletics/etc. "
+         "As δ increases, less of the admit rate gap is attributed to γ."
+)
+sigma_u = st.sidebar.slider(
+    "Confounder noise σ (individual variation)",
+    0.0, 2.0, 0.3, 0.05,
+    help="Within-group SD of unobserved factors. "
+         "Higher σ = more individual variation in essays/extracurriculars/etc., "
+         "widening the posterior on γ."
+)
+st.sidebar.markdown("---")
+st.sidebar.header("Simulation Noise")
 sigma_noise = st.sidebar.slider(
-    "Essay / holistic noise σ", 0.0, 5.0, 1.0, 0.1,
-    help="Represents unobserved factors like essays and extracurriculars. "
-         "Higher σ = more uncertainty in the posterior for γ."
+    "Simulation noise σ (Estimating Admit Rates only)",
+    0.0, 2.0, 0.3, 0.1,
+    help="Individual noise used in the forward simulation tab only. "
+         "Does not affect the Estimating Gamma posterior."
 )
 
 
 # ---------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------
-def make_df(total, white_prop, means, stds):
+def make_df(total, white_prop, asian_prop, means, stds):
     df = generate_applicant_dataset(
         total_applicants = total,
         white_proportion = white_prop,
+        asian_proportion = asian_prop,
         means            = means,
         stds             = stds,
         gpa_weight       = w_gpa,
         sat_weight       = w_sat,
     )
-    df["Q"] = df["Q"] - df["Q"].mean()
+    df["Q"] = (df["Q"] - df["Q"].mean()) / df["Q"].std()
     return df
 
 
@@ -87,51 +113,47 @@ def draw_Y_from_rates(df, white_admit, asian_admit):
     return df
 
 
-def show_admit_summary(df, label=""):
+def show_admit_summary(df):
     admitted    = df[df["Y"] == 1]
     white_df    = df[df["Z"] == 0]
     asian_df    = df[df["Z"] == 1]
-    overall     = df["Y"].mean()
     white_share = white_df["Y"].sum() / max(len(admitted), 1)
     asian_share = asian_df["Y"].sum() / max(len(admitted), 1)
 
-    if label:
-        st.markdown(f"### {label}")
-
     m1, m2, m3 = st.columns(3)
-    m1.metric("Overall admit rate",            f"{overall:.1%}")
+    m1.metric("Overall admit rate",            f"{df['Y'].mean():.1%}")
     m2.metric("White admit rate",              f"{white_df['Y'].mean():.1%}")
     m3.metric("Asian American admit rate",     f"{asian_df['Y'].mean():.1%}")
 
     m4, m5, m6 = st.columns(3)
     m4.metric("Total admitted",                f"{len(admitted):,}")
-    m5.metric("White share of class",          f"{white_share:.1%}")
-    m6.metric("Asian American share of class", f"{asian_share:.1%}")
+    m5.metric("White share of admitted class", f"{white_share:.1%}")
+    m6.metric("Asian share of admitted class", f"{asian_share:.1%}")
 
 
-def show_posterior(df, beta0, label=""):
-    if label:
-        st.markdown(f"#### {label}")
-
+def show_posterior(df, beta0):
     with st.spinner("Computing posterior..."):
         gamma_grid, posterior, p_neg = compute_posterior(
             df, beta0=beta0, beta1=BETA1,
-            sigma_noise=sigma_noise, gamma_grid=GAMMA_GRID
+            prior_std=1.0,
+            delta=delta,
+            sigma_u=sigma_u,
+            gamma_grid=GAMMA_GRID
         )
 
-    st.metric("P(γ < 0 | D)", f"{p_neg * 100:.2f}%")
+    st.metric("P(γ < 0 | D)", f"{p_neg:.4f}")
 
     if p_neg > 0.95:
-        st.error(f"Based on dataset and assumptions of applicant pool, there is a {p_neg * 100:.2f}% certainty the gamma value is less than 1. This means there is highly likely bias in the admission process.")
-    elif p_neg > 0.75:
-        st.warning(f"Based on dataset and assumptions of applicant pool, there is a {p_neg * 100:.2f}% certainty the gamma value is less than 1. This means there is likely bias in the admission process.")
+        st.error("Strong evidence of a penalty against Asian American applicants.")
+    elif p_neg > 0.8:
+        st.warning("Moderate evidence of a penalty against Asian American applicants.")
     elif p_neg > 0.5:
-        st.info(f"Based on dataset and assumptions of applicant pool, there is a {p_neg * 100:.2f}% certainty the gamma value is less than 1. This means there is possibly bias in the admission process.")
+        st.info("Weak evidence of a penalty — results inconclusive.")
     else:
-        st.success(f"Based on dataset and assumptions of applicant pool, there is a {p_neg * 100:.2f}% certainty the gamma value is less than 1. This means there is no convincing evidence of bias in the admission process.")
+        st.success("No meaningful evidence of bias detected.")
 
-    fig, ax = plt.subplots(figsize=(7, 2.5))
-    ax.plot(gamma_grid, posterior, color="#c43a3a", linewidth=2)
+    fig, ax = plt.subplots(figsize=(7, 2.8))
+    ax.plot(gamma_grid, posterior, color="#5b9bd5", linewidth=2)
     ax.axvline(0, color="black", linestyle="--", linewidth=1, label="γ = 0")
     ax.fill_between(
         gamma_grid[gamma_grid < 0], posterior[gamma_grid < 0],
@@ -144,6 +166,19 @@ def show_posterior(df, beta0, label=""):
     st.pyplot(fig)
 
 
+def proportion_sliders(col, wp_key, ap_key, wp_default=0.77, ap_default=0.06):
+    """Two independent proportion sliders that validate they don't exceed 1.0."""
+    with col:
+        wp = st.slider("White proportion",         0.01, 0.99, step=0.01, key=wp_key)
+        ap = st.slider("Asian American proportion", 0.01, 0.99, step=0.01, key=ap_key)
+        total = wp + ap
+        if total > 1.0:
+            st.error(f"White ({wp:.0%}) + Asian ({ap:.0%}) = {total:.0%} — must not exceed 100%.")
+            st.stop()
+        st.caption(f"Other groups: {1 - total:.0%} of applicant pool")
+    return wp, ap
+
+
 # ================================================================
 # TABS
 # ================================================================
@@ -152,25 +187,26 @@ tab_eg, tab_ear = st.tabs(["Estimating Gamma", "Estimating Admit Rates"])
 
 # ================================================================
 # TAB 1 — ESTIMATING GAMMA
-# User inputs score means + observed admit rates → infer P(γ < 0 | D)
 # ================================================================
 with tab_eg:
     st.subheader("Estimating Gamma")
     st.markdown(
-        "Input observed admit rates by race. The model infers **γ** — "
-        "the bias indicator — from the disparity between groups after "
-        "accounting for GPA and SAT differences. Essays and holistic factors "
-        "enter as noise, which widens the posterior and reflects genuine uncertainty."
+        "Input observed admit rates by race. The model infers **γ** — the bias indicator — "
+        "from the admit rate disparity after accounting for GPA and SAT differences. "
+        "Use the sidebar to control **unobserved confounders** (legacy, athletics, geography): "
+        "raising **δ** shifts credit for the gap away from γ toward race-correlated but "
+        "non-discriminatory factors. Raising **σ** widens the posterior to reflect individual variation."
     )
 
     # Dataset loader
     dataset_labels = ["— Enter manually —"] + [d["label"] for d in DATASETS]
-    selected       = st.selectbox("Load a dataset", dataset_labels, key="eg_selected")
+    selected = st.selectbox("Load a dataset", dataset_labels, key="eg_selected")
 
     if selected != "— Enter manually —":
         d = next(x for x in DATASETS if x["label"] == selected)
         st.session_state["eg_total"]     = d["total_applicants"]
         st.session_state["eg_wprop"]     = float(d["white_proportion"])
+        st.session_state["eg_aprop"]     = float(d["asian_proportion"])
         st.session_state["eg_wgpa"]      = float(d["white_gpa_mean"])
         st.session_state["eg_agpa"]      = float(d["asian_gpa_mean"])
         st.session_state["eg_wsat"]      = int(d["white_sat_mean"])
@@ -183,22 +219,28 @@ with tab_eg:
         st.session_state["eg_a_sat_std"] = d["asian_sat_std"]
 
     c1, c2, c3 = st.columns(3)
+
     with c1:
-        eg_total   = st.number_input("Total applicants", 100, 150000, step=1000, key="eg_total")
-        eg_wprop   = st.slider("White proportion", 0.01, 0.99, step=0.01, key="eg_wprop")
-        st.caption(f"Asian American proportion: {1 - eg_wprop:.2f}")
+        eg_total = st.number_input("Total applicants", 100, 150000, step=1000, key="eg_total")
+        eg_wprop = st.slider("White proportion",          0.01, 0.99, step=0.01, key="eg_wprop")
+        eg_aprop = st.slider("Asian American proportion", 0.01, 0.99, step=0.01, key="eg_aprop")
+        eg_combined = eg_wprop + eg_aprop
+        if eg_combined > 1.0:
+            st.error(f"White ({eg_wprop:.0%}) + Asian ({eg_aprop:.0%}) = {eg_combined:.0%} — must not exceed 100%.")
+            st.stop()
+        st.caption(f"Other groups: {1 - eg_combined:.0%} of applicant pool")
 
     with c2:
         st.markdown("**White Applicants**")
-        eg_wgpa    = st.number_input("Mean GPA", 0.0, 4.0,  step=0.01, key="eg_wgpa")
-        eg_wsat    = st.number_input("Mean SAT", 400, 1600, step=10,   key="eg_wsat")
-        eg_wadmit  = st.slider("Admit rate (%)", 0.1, 100.0, step=0.1, key="eg_wadmit") / 100
+        eg_wgpa   = st.number_input("Mean GPA", 0.0, 4.0,  step=0.01, key="eg_wgpa")
+        eg_wsat   = st.number_input("Mean SAT", 400, 1600, step=10,   key="eg_wsat")
+        eg_wadmit = st.slider("Admit rate (%)", 0.1, 100.0, step=0.1, key="eg_wadmit") / 100
 
     with c3:
         st.markdown("**Asian American Applicants**")
-        eg_agpa    = st.number_input("Mean GPA", 0.0, 4.0,  step=0.01, key="eg_agpa")
-        eg_asat    = st.number_input("Mean SAT", 400, 1600, step=10,   key="eg_asat")
-        eg_aadmit  = st.slider("Admit rate (%)", 0.1, 100.0, step=0.1, key="eg_aadmit") / 100
+        eg_agpa   = st.number_input("Mean GPA", 0.0, 4.0,  step=0.01, key="eg_agpa")
+        eg_asat   = st.number_input("Mean SAT", 400, 1600, step=10,   key="eg_asat")
+        eg_aadmit = st.slider("Admit rate (%)", 0.1, 100.0, step=0.1, key="eg_aadmit") / 100
 
     if st.button("Estimate γ", type="primary", key="eg_run"):
         means = {
@@ -209,10 +251,22 @@ with tab_eg:
             "white": {"gpa": st.session_state["eg_w_gpa_std"], "sat": st.session_state["eg_w_sat_std"]},
             "asian": {"gpa": st.session_state["eg_a_gpa_std"], "sat": st.session_state["eg_a_sat_std"]},
         }
-        df      = make_df(int(eg_total), eg_wprop, means, stds)
-        df      = draw_Y_from_rates(df, eg_wadmit, eg_aadmit)
-        overall = df["Y"].mean()
-        beta0   = np.log(overall / (1 - overall))
+        df = make_df(int(eg_total), eg_wprop, eg_aprop, means, stds)
+        df = draw_Y_from_rates(df, eg_wadmit, eg_aadmit)
+
+        # beta0 is calibrated to the admit rate within the modeled subgroup
+        # (white + asian only). Other racial groups are not modeled and do
+        # not affect inference — the effective pool is n_white + n_asian.
+        n_modeled = len(df)
+        n_total   = int(eg_total)
+        overall   = df["Y"].mean()
+        beta0     = np.log(overall / (1 - overall))
+
+        st.caption(
+            f"Modelling {n_modeled:,} of {n_total:,} applicants "
+            f"({n_modeled/n_total:.0%} — white + Asian American only). "
+            f"Other groups are excluded from inference."
+        )
 
         st.markdown("---")
         show_admit_summary(df)
@@ -229,53 +283,63 @@ with tab_eg:
 
 # ================================================================
 # TAB 2 — ESTIMATING ADMIT RATES
-# User inputs score means → shows outcomes under γ = 0, -0.5, -0.8
 # ================================================================
 with tab_ear:
     st.subheader("Estimating Admit Rates")
     st.markdown(
         "Input applicant pool parameters. The model shows expected admission "
         "outcomes under three worlds: **no bias** (γ = 0), **moderate bias** "
-        "(γ = −0.5), and **strong bias** (γ = −1) against Asian American applicants."
+        "(γ = −0.5), and **strong bias** (γ = −0.8) against Asian American applicants."
     )
 
     e1, e2, e3 = st.columns(3)
     with e1:
         ear_total    = st.number_input("Total applicants", 100, 150000, 25000, 1000, key="ear_total")
-        ear_wprop    = st.slider("White proportion", 0.01, 0.99, 0.77, 0.01, key="ear_wprop")
-        st.caption(f"Asian American proportion: {1 - ear_wprop:.2f}")
+        ear_wprop    = st.slider("White proportion",          0.01, 0.99, 0.77, 0.01, key="ear_wprop")
+        ear_aprop    = st.slider("Asian American proportion", 0.01, 0.99, 0.06, 0.01, key="ear_aprop")
+        ear_combined = ear_wprop + ear_aprop
+        if ear_combined > 1.0:
+            st.error(f"White ({ear_wprop:.0%}) + Asian ({ear_aprop:.0%}) = {ear_combined:.0%} — must not exceed 100%.")
+            st.stop()
+        st.caption(f"Other groups: {1 - ear_combined:.0%} of applicant pool")
         ear_baseline = st.slider("Baseline admit rate (%)", 1, 100, 60, 1, key="ear_baseline") / 100
 
     with e2:
         st.markdown("**White Applicants**")
-        ear_wgpa  = st.number_input("Mean GPA", 0.0, 4.0,  3.90, 0.01, key="ear_wgpa")
-        ear_wsat  = st.number_input("Mean SAT", 400, 1600, 1350, 10,   key="ear_wsat")
+        ear_wgpa = st.number_input("Mean GPA", 0.0, 4.0,  3.90, 0.01, key="ear_wgpa")
+        ear_wsat = st.number_input("Mean SAT", 400, 1600, 1350, 10,   key="ear_wsat")
 
     with e3:
         st.markdown("**Asian American Applicants**")
-        ear_agpa  = st.number_input("Mean GPA", 0.0, 4.0,  3.80, 0.01, key="ear_agpa")
-        ear_asat  = st.number_input("Mean SAT", 400, 1600, 1400, 10,   key="ear_asat")
+        ear_agpa = st.number_input("Mean GPA", 0.0, 4.0,  3.80, 0.01, key="ear_agpa")
+        ear_asat = st.number_input("Mean SAT", 400, 1600, 1400, 10,   key="ear_asat")
 
     if st.button("Run", type="primary", key="ear_run"):
         means = {
             "white": {"gpa": ear_wgpa, "sat": ear_wsat},
             "asian": {"gpa": ear_agpa, "sat": ear_asat},
         }
-        df_base = make_df(int(ear_total), ear_wprop, means, STDS)
+        df_base = make_df(int(ear_total), ear_wprop, ear_aprop, means, STDS)
         beta0   = np.log(ear_baseline / (1 - ear_baseline))
 
+        n_modeled = len(df_base)
+        st.caption(
+            f"Modelling {n_modeled:,} of {int(ear_total):,} applicants "
+            f"({n_modeled/int(ear_total):.0%} — white + Asian American only). "
+            f"Other groups are excluded from inference."
+        )
         st.markdown("---")
         col0, col1, col2 = st.columns(3)
 
-        gammas      = [0.0, -0.5, -1]
-        labels      = ["γ = 0", "γ = −0.5", "γ = −1"]
-        white_rates = []
-        asian_rates = []
+        gammas       = [0.0, -0.5, -0.8]
+        labels       = ["γ = 0", "γ = −0.5", "γ = −0.8"]
+        white_rates  = []
+        asian_rates  = []
         white_shares = []
         asian_shares = []
 
         for col, gamma, label in zip([col0, col1, col2], gammas, labels):
-            df_g        = simulate_admissions(
+            df_g     = simulate_admissions(
                 df_base, beta0=beta0, beta1=BETA1,
                 gamma=gamma, sigma_noise=sigma_noise
             )
@@ -304,14 +368,13 @@ with tab_ear:
         # ---- Chart ----
         st.markdown("---")
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
-        x      = np.arange(len(labels))
-        width  = 0.35
+        x     = np.arange(len(labels))
+        width = 0.35
 
-        # Admit rates
         ax1.bar(x - width/2, [r * 100 for r in white_rates], width,
-                label="White", color="#e6e6e6")
-        ax1.bar(x + width/2, [r * 100 for r in asian_rates],  width,
-                label="Asian American", color="#bc9757")
+                label="White", color="#5b9bd5")
+        ax1.bar(x + width/2, [r * 100 for r in asian_rates], width,
+                label="Asian American", color="#c8a96e")
         ax1.set_xticks(x); ax1.set_xticklabels(labels)
         ax1.set_ylabel("Admit Rate (%)"); ax1.set_title("Admit Rate by Race")
         ax1.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2)
@@ -320,11 +383,10 @@ with tab_ear:
             ax1.text(i - width/2, w * 100 + 0.2, f"{w:.1%}", ha="center", fontsize=8)
             ax1.text(i + width/2, a * 100 + 0.2, f"{a:.1%}", ha="center", fontsize=8)
 
-        # Share of admitted class
         ax2.bar(x - width/2, [s * 100 for s in white_shares], width,
-                label="White", color="#e6e6e6")
-        ax2.bar(x + width/2, [s * 100 for s in asian_shares],  width,
-                label="Asian American", color="#bc9757")
+                label="White", color="#5b9bd5")
+        ax2.bar(x + width/2, [s * 100 for s in asian_shares], width,
+                label="Asian American", color="#c8a96e")
         ax2.set_xticks(x); ax2.set_xticklabels(labels)
         ax2.set_ylabel("Share of Admitted Class (%)")
         ax2.set_title("Share of Admitted Class by Race")

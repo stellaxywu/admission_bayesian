@@ -3,7 +3,7 @@ import pandas as pd
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
 
 
 def simulate_admissions(
@@ -20,8 +20,8 @@ def simulate_admissions(
         P(Y_i=1) = sigma(beta0 + beta1*Q_i + gamma*Z_i + eps_i)
         eps_i ~ N(0, sigma_noise^2)
 
-    sigma_noise represents unobserved holistic factors (essays,
-    extracurriculars, interviews) that the model cannot directly observe.
+    eps is centered within each race group so it creates individual-level
+    variation only, not spurious group-level gaps.
 
     Class size is fixed to the gamma=0, no-noise expected count so that
     bias shows up as a shift in racial composition, not total class size.
@@ -36,8 +36,12 @@ def simulate_admissions(
     p_unbiased = sigmoid(beta0 + beta1 * Q)
     n_target   = p_unbiased.sum()
 
-    # Draw noise
+    # Draw noise centered within each race group
     eps = rng.normal(0, sigma_noise, size=n)
+    for z_val in [0, 1]:
+        mask = Z == z_val
+        if mask.sum() > 0:
+            eps[mask] -= eps[mask].mean()
 
     # Find beta0 adjustment so expected admits equals n_target
     def expected_admits(adj):
@@ -65,30 +69,18 @@ def log_likelihood(
     df: pd.DataFrame,
     beta0: float,
     beta1: float,
-    sigma_noise: float,
-    n_samples: int = 50,
-    seed: int = 1,
 ) -> float:
     """
-    Marginal log-likelihood integrating out noise:
+    Standard logistic log-likelihood (no noise term):
 
-        log P(D|gamma) = sum_i log E_eps[ p_i(gamma, eps)^Y_i * (1-p_i)^(1-Y_i) ]
+        log P(D|gamma) = sum_i [ Y_i*log(p_i) + (1-Y_i)*log(1-p_i) ]
+        where p_i = sigma(beta0 + beta1*Q_i + gamma*Z_i)
 
-    Approximated by Monte Carlo over n_samples noise draws per applicant.
+    Noise eps is part of the simulation (forward model) only.
+    For inference we integrate out eps analytically by using the
+    logistic regression likelihood directly — this is valid because
+    eps is mean-zero and independent of Z by construction.
     """
-    rng = np.random.default_rng(seed)
-    Q   = df["Q"].values
-    Z   = df["Z"].values
-    Y   = df["Y"].values
-    n   = len(df)
-
-    # eps shape: (n_samples, n)
-    eps = rng.normal(0, sigma_noise, size=(n_samples, n))
-    logits = beta0 + beta1 * Q[None, :] + gamma * Z[None, :] + eps
-    p = np.clip(sigmoid(logits), 1e-12, 1 - 1e-12)
-
-    # likelihood per sample per applicant
-    lik = p ** Y[None, :] * (1 - p) ** (1 - Y[None, :])  # (n_samples, n)
-
-    # average over noise samples, then log and sum over applicants
-    return np.sum(np.log(lik.mean(axis=0)))
+    p = sigmoid(beta0 + beta1 * df["Q"].values + gamma * df["Z"].values)
+    p = np.clip(p, 1e-12, 1 - 1e-12)
+    return np.sum(df["Y"].values * np.log(p) + (1 - df["Y"].values) * np.log(1 - p))
