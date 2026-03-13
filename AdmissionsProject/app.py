@@ -289,7 +289,7 @@ with tab_ear:
     st.markdown(
         "Input applicant pool parameters. The model shows expected admission "
         "outcomes under three worlds: **no bias** (γ = 0), **moderate bias** "
-        "(γ = −0.5), and **strong bias** (γ = −0.8) against Asian American applicants."
+        "(γ = −0.5), and **strong bias** (γ = -1) against Asian American applicants."
     )
 
     e1, e2, e3 = st.columns(3)
@@ -331,8 +331,8 @@ with tab_ear:
         st.markdown("---")
         col0, col1, col2 = st.columns(3)
 
-        gammas       = [0.0, -0.5, -0.8]
-        labels       = ["γ = 0", "γ = −0.5", "γ = −0.8"]
+        gammas       = [0.0, -0.5, -1]
+        labels       = ["γ = 0", "γ = −0.5", "γ = −1"]
         white_rates  = []
         asian_rates  = []
         white_shares = []
